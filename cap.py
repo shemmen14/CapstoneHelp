@@ -10,7 +10,7 @@ RECORD_SECONDS = 5                    # clip length
 COOLDOWN_SECONDS = 30                 # min time between triggers
 
 DEVICE = "/dev/video0"                # your USB Arducam device
-WIDTH, HEIGHT, FPS = 1920, 1080       # match what your cam supports
+WIDTH, HEIGHT, FPS = 1920, 1080, 30       # match what your cam supports
 INPUT_FORMAT = "mjpeg"                # from v4l2-ctl --list-formats-ext
 ENCODER = "h264_v4l2m2m"              # try HW encoder; fallback to libx264 automatically
 BITRATE = "6M"
