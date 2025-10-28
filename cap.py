@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os, time, threading, subprocess, shlex, shutil
 from datetime import datetime
 import RPi.GPIO as GPIO
