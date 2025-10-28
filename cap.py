@@ -9,9 +9,9 @@ VIDEO_DIR = os.path.expanduser("~/videos")
 RECORD_SECONDS = 5                    # clip length
 COOLDOWN_SECONDS = 30                 # min time between triggers
 
-DEVICE = "/dev/video0"                # your USB Arducam device
-WIDTH, HEIGHT, FPS = 1920, 1080, 30       # match what your cam supports
-INPUT_FORMAT = "mjpeg"                # from v4l2-ctl --list-formats-ext
+DEVICE = "/dev/video0"                # USB Arducam device
+WIDTH, HEIGHT, FPS = 1920, 1080, 30   # Video Settings
+INPUT_FORMAT = "mjpeg"                
 ENCODER = "h264_v4l2m2m"              # try HW encoder; fallback to libx264 automatically
 BITRATE = "6M"
 
@@ -40,7 +40,7 @@ def ffmpeg_cmd(outpath):
         cmd = base + f'-c:v {ENCODER} -b:v {BITRATE} {shlex.quote(outpath)}'
         test = run_cmd(cmd)
         if test.returncode == 0:
-            return cmd  # worked
+            return cmd  
         # Fallback
         return base + f'-c:v libx264 -preset veryfast -crf 23 {shlex.quote(outpath)}'
     else:
