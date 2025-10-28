@@ -26,7 +26,7 @@ def run_cmd(cmd):
     )
 
 def ffmpeg_cmd(outpath):
-    # Build FFmpeg command for a 5s capture from a UVC cam
+    # FFmpeg command for a 5s capture
     base = (
         f'ffmpeg -hide_banner -loglevel error -y '
         f'-f v4l2 -framerate {FPS} -video_size {WIDTH}x{HEIGHT} '
