@@ -365,25 +365,26 @@ DASHBOARD_TEMPLATE = """
 def gen_frames():
     """Generator that yields JPEG frames from the USB camera for livestream.
 
-    Only runs meaningfully when CAMERA_MODE == "stream".
+    Only active while CAMERA_MODE == "stream" and KILL_REQUESTED is False.
+    Uses the V4L2 backend to avoid GStreamer pipeline issues.
     """
     if not HAS_OPENCV:
         return
 
     global KILL_REQUESTED, CAMERA_MODE
 
-    # Open camera
-    cap = cv2.VideoCapture(DEVICE)
+    # Open camera with V4L2 backend
+    cap = cv2.VideoCapture(DEVICE, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 20)
+    cap.set(cv2.CAP_PROP_FPS, 15)
 
     if not cap.isOpened():
-        print("[Livestream] Failed to open camera for streaming.")
+        print("[Livestream] Failed to open camera with V4L2 backend.")
         cap.release()
         return
 
-    print("[Livestream] Camera opened for streaming.")
+    print("[Livestream] Streaming started (V4L2 backend).")
 
     while True:
         if KILL_REQUESTED or CAMERA_MODE != "stream":
@@ -391,7 +392,8 @@ def gen_frames():
 
         success, frame = cap.read()
         if not success:
-            time.sleep(0.1)
+            # brief backoff if frame read fails
+            time.sleep(0.05)
             continue
 
         ret, buffer = cv2.imencode(".jpg", frame)
@@ -404,7 +406,8 @@ def gen_frames():
         )
 
     cap.release()
-    print("[Livestream] Camera released; livestream stopped or mode changed.")
+    print("[Livestream] Streaming stopped (mode changed or kill).")
+
 
 
 if HAS_FLASK:
