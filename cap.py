@@ -49,7 +49,7 @@ BITRATE = "6M"
 last_trigger = 0.0                    # monotonic timestamp of last *recording* trigger
 record_lock = threading.Lock()
 
-last_motion_timestamp = None          # human-readable string
+last_motion_timestamp = None 
 last_motion_delta = None              # seconds since previous motion
 motion_event_count = 0
 
