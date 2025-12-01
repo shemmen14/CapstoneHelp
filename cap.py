@@ -46,10 +46,12 @@ BITRATE = "6M"
 last_trigger = 0.0                    # monotonic timestamp of last *recording* trigger
 record_lock = threading.Lock()
 
-# dashboard state
 last_motion_timestamp = None          # human-readable string
 last_motion_delta = None              # seconds since previous motion
 motion_event_count = 0
+
+KILL_REQUESTED = False                # <-- for web kill switch
+
 
 # ---------- UTILS ----------
 def run_cmd(cmd):
@@ -65,13 +67,13 @@ def upload_to_drive(path):
     if not os.path.exists(path):
         return
     try:
-        # copy file into Google Drive folder (remote is configured via rclone)
         cmd = f"rclone copy {shlex.quote(path)} {GOOGLE_DRIVE_REMOTE}"
         res = run_cmd(cmd)
         if res.returncode != 0:
             print(f"rclone upload error for {path}:\n", res.stderr.strip() or res.stdout.strip())
     except Exception as e:
         print(f"rclone exception for {path}: {e}")
+
 
 # ---------- FFMPEG ----------
 def ffmpeg_cmd(outpath):
@@ -109,6 +111,7 @@ def record_clip():
         print(f"[{ts}] Saved {out}")
         # upload video to Google Drive
         upload_to_drive(out)
+
 
 # ---------- CHART GENERATION ----------
 def update_interval_chart():
@@ -153,6 +156,7 @@ def update_interval_chart():
     # upload graph to Google Drive
     upload_to_drive(GRAPH_FILE)
 
+
 # ---------- CSV LOGGING ----------
 def log_motion(timestamp, delta):
     """Append motion detection timestamp + time since last motion to CSV and update chart."""
@@ -172,6 +176,7 @@ def log_motion(timestamp, delta):
 
     # update chart after logging
     update_interval_chart()
+
 
 # ---------- MOTION HANDLER ----------
 def on_motion(_ch):
@@ -193,13 +198,13 @@ def on_motion(_ch):
     last_motion_delta = delta
     motion_event_count += 1
 
-    # print to terminal (requested feature)
+    # print to terminal
     if delta is None:
         print(f"[{timestamp_str}] Motion detected (first event).")
     else:
         print(f"[{timestamp_str}] Motion detected. Δt since last motion = {delta} s.")
 
-    # log every detection (even if within cooldown)
+    # log every detection
     log_motion(timestamp_str, delta)
 
     # cooldown check for recording
@@ -215,6 +220,7 @@ def on_motion(_ch):
                 print("Recording error:", e)
 
     threading.Thread(target=worker, daemon=True).start()
+
 
 # ---------- WEB DASHBOARD ----------
 app = Flask(__name__) if HAS_FLASK else None
@@ -232,6 +238,16 @@ DASHBOARD_TEMPLATE = """
         h1 { margin-top: 0; }
         img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }
         dt { font-weight: bold; }
+        button.kill {
+            padding: 10px 20px;
+            font-size: 16px;
+            background: #c0392b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-top: 12px;
+        }
     </style>
 </head>
 <body>
@@ -260,6 +276,11 @@ DASHBOARD_TEMPLATE = """
         {% else %}
             <p>No interval graph yet. It will appear after a few motion events.</p>
         {% endif %}
+
+        <h2>Controls</h2>
+        <form action="/kill" method="get">
+            <button class="kill">STOP PROGRAM</button>
+        </form>
     </div>
 </body>
 </html>
@@ -291,6 +312,12 @@ if HAS_FLASK:
             motion_event_count=motion_event_count,
         )
 
+    @app.route("/kill")
+    def kill():
+        global KILL_REQUESTED
+        KILL_REQUESTED = True
+        return "<h1>Kill signal sent. Program will shut down.</h1>", 200
+
     def start_dashboard():
         # accessible at http://<pi-ip>:5000/
         app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
@@ -298,8 +325,11 @@ else:
     def start_dashboard():
         print("Flask not installed; web dashboard disabled.")
 
+
 # ---------- MAIN ----------
 def main():
+    global KILL_REQUESTED
+
     os.makedirs(DATA_DIR, exist_ok=True)
 
     # start dashboard in background thread
@@ -318,11 +348,15 @@ def main():
 
     try:
         while True:
+            if KILL_REQUESTED:
+                print("Kill switch activated from web dashboard. Shutting down...")
+                break
             time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     finally:
         GPIO.cleanup()
+
 
 if __name__ == "__main__":
     main()
