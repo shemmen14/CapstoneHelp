@@ -258,7 +258,6 @@ DASHBOARD_TEMPLATE = """
 <head>
     <meta charset="utf-8">
     <title>Capstone Motion Dashboard</title>
-    <meta http-equiv="refresh" content="5">
     <style>
         body { font-family: sans-serif; margin: 20px; }
         .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; max-width: 900px; }
@@ -297,7 +296,7 @@ DASHBOARD_TEMPLATE = """
         <h1>Capstone Motion Dashboard</h1>
 
         <p>Current camera mode:
-            <strong>{{ current_mode.upper() }}</strong>
+            <strong id="modeText">{{ current_mode.upper() }}</strong>
         </p>
         <form action="/mode/record" method="get" style="display:inline;">
             <button class="mode-btn {% if current_mode == 'record' %}active{% endif %}">
@@ -315,10 +314,10 @@ DASHBOARD_TEMPLATE = """
                 <h2>Status</h2>
                 <dl>
                     <dt>Last motion timestamp</dt>
-                    <dd>{{ last_motion_timestamp or "No motion yet" }}</dd>
+                    <dd id="lastMotion">{{ last_motion_timestamp or "No motion yet" }}</dd>
 
                     <dt>Seconds since previous motion</dt>
-                    <dd>
+                    <dd id="deltaMotion">
                         {% if last_motion_delta is none %}
                             N/A
                         {% else %}
@@ -327,7 +326,7 @@ DASHBOARD_TEMPLATE = """
                     </dd>
 
                     <dt>Total motion events (since script start)</dt>
-                    <dd>{{ motion_event_count }}</dd>
+                    <dd id="eventCount">{{ motion_event_count }}</dd>
                 </dl>
 
                 <h2>Controls</h2>
@@ -339,7 +338,7 @@ DASHBOARD_TEMPLATE = """
             <div class="col">
                 <h2>Live Camera Stream</h2>
                 {% if livestream_available and current_mode == 'stream' %}
-                    <img src="/livestream" alt="Live camera stream">
+                    <img id="liveStream" src="/livestream" alt="Live camera stream">
                     <p style="font-size:12px;color:#555;">
                         Stream is active in STREAM mode. Switch to RECORD mode to enable clip recording.
                     </p>
@@ -353,11 +352,53 @@ DASHBOARD_TEMPLATE = """
 
         <h2>Intervals Between Motions</h2>
         {% if graph_exists %}
-            <img src="/graph" alt="Motion intervals graph">
+            <img id="intervalGraph" src="/graph" alt="Motion intervals graph">
         {% else %}
             <p>No interval graph yet. It will appear after a few motion events.</p>
         {% endif %}
     </div>
+
+    <script>
+        async function refreshData() {
+            try {
+                const res = await fetch('/data');
+                if (!res.ok) return;
+                const data = await res.json();
+
+                // Update text fields
+                document.getElementById('lastMotion').textContent =
+                    data.last_motion_timestamp || 'No motion yet';
+
+                document.getElementById('eventCount').textContent =
+                    data.motion_event_count;
+
+                if (data.last_motion_delta === null || data.last_motion_delta === undefined) {
+                    document.getElementById('deltaMotion').textContent = 'N/A';
+                } else {
+                    document.getElementById('deltaMotion').textContent =
+                        data.last_motion_delta + ' s';
+                }
+
+                // Mode text (this won't toggle buttons, but keeps label correct)
+                if (data.current_mode) {
+                    document.getElementById('modeText').textContent = data.current_mode.toUpperCase();
+                }
+
+                // Bust cache on graph so it updates as the file changes
+                const graph = document.getElementById('intervalGraph');
+                if (graph) {
+                    const baseSrc = '/graph';
+                    graph.src = baseSrc + '?t=' + Date.now();
+                }
+            } catch (e) {
+                // silently ignore errors
+            }
+        }
+
+        // Poll every 3 seconds
+        setInterval(refreshData, 3000);
+        refreshData();
+    </script>
 </body>
 </html>
 """
