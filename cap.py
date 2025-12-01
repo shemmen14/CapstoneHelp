@@ -4,31 +4,33 @@
 import os, time, threading, subprocess, shlex, shutil
 from datetime import datetime
 import RPi.GPIO as GPIO
-import csv   # --- NEW ---
+import csv   # NEW
 
-# --- NEW: plotting imports (safe if matplotlib missing) ---
+# --- NEW / CHANGED: Use CapstoneData folder ---
+DATA_DIR = os.path.expanduser("~/CapstoneData")   # <--- CHANGED FROM ~/videos
+VIDEO_DIR = DATA_DIR                               # <--- alias for clarity
+LOG_FILE = os.path.join(DATA_DIR, "motion_log.csv")
+GRAPH_FILE = os.path.join(DATA_DIR, "motion_intervals.png")
+
+# --- plotting imports (non-GUI backend) ---
 try:
     import matplotlib
-    matplotlib.use("Agg")  # non-GUI backend
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     HAS_MPL = True
 except Exception:
     HAS_MPL = False
 
 # ---------- SETTINGS ----------
-PIR_PIN = 17                          # BCM pin for PIR OUT
-VIDEO_DIR = os.path.expanduser("~/videos")
-RECORD_SECONDS = 5                    # clip length
-COOLDOWN_SECONDS = 30                 # min time between triggers
+PIR_PIN = 17
+RECORD_SECONDS = 5
+COOLDOWN_SECONDS = 30
 
-DEVICE = "/dev/video0"                # USB Arducam device
-WIDTH, HEIGHT, FPS = 1920, 1080, 30      
-INPUT_FORMAT = "mjpeg"               
-ENCODER = "h264_v4l2m2m"              # try HW encoder; fallback to libx264 automatically
+DEVICE = "/dev/video0"
+WIDTH, HEIGHT, FPS = 1920, 1080, 30
+INPUT_FORMAT = "mjpeg"
+ENCODER = "h264_v4l2m2m"
 BITRATE = "6M"
-
-# ---------- NEW ----------
-LOG_FILE = os.path.join(VIDEO_DIR, "motion_log.csv")
 
 # ---------- STATE ----------
 last_trigger = 0.0
@@ -41,7 +43,6 @@ def run_cmd(cmd):
     )
 
 def ffmpeg_cmd(outpath):
-    # FFmpeg command for a 5s capture from a UVC cam
     base = (
         f'ffmpeg -hide_banner -loglevel error -y '
         f'-f v4l2 -framerate {FPS} -video_size {WIDTH}x{HEIGHT} '
@@ -49,21 +50,20 @@ def ffmpeg_cmd(outpath):
         f'-t {RECORD_SECONDS} '
         f'-pix_fmt yuv420p '
     )
-  
+
     if shutil.which("ffmpeg"):
-        
         cmd = base + f'-c:v {ENCODER} -b:v {BITRATE} {shlex.quote(outpath)}'
         test = run_cmd(cmd)
         if test.returncode == 0:
-            return cmd  
-        
+            return cmd
+
         return base + f'-c:v libx264 -preset veryfast -crf 23 {shlex.quote(outpath)}'
     else:
         raise RuntimeError("ffmpeg not found")
 
 def record_clip():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = os.path.join(VIDEO_DIR, f"motion_{ts}.mp4")
+    out = os.path.join(DATA_DIR, f"motion_{ts}.mp4")
     print(f"[{ts}] Recording {RECORD_SECONDS}s -> {out}")
 
     cmd = ffmpeg_cmd(out)
@@ -75,14 +75,10 @@ def record_clip():
 
 # -------- NEW: chart generation from CSV --------
 def update_interval_chart():
-    """Read motion_log.csv and generate a PNG chart of intervals between motions."""
-    if not HAS_MPL:
-        return
-    if not os.path.exists(LOG_FILE):
+    if not HAS_MPL or not os.path.exists(LOG_FILE):
         return
 
-    indices = []
-    deltas = []
+    indices, deltas = [], []
 
     try:
         with open(LOG_FILE, newline="") as f:
@@ -92,13 +88,12 @@ def update_interval_chart():
                 if not delta_str or delta_str == "None":
                     continue
                 try:
-                    delta_val = float(delta_str)
+                    val = float(delta_str)
                 except ValueError:
                     continue
-                deltas.append(delta_val)
+                deltas.append(val)
                 indices.append(len(deltas))
     except Exception:
-        # Don't let plotting errors break main functionality
         return
 
     if not deltas:
@@ -112,15 +107,13 @@ def update_interval_chart():
     plt.grid(True, linestyle="--", linewidth=0.5)
     plt.tight_layout()
 
-    out_png = os.path.join(VIDEO_DIR, "motion_intervals.png")
     try:
-        plt.savefig(out_png)
+        plt.savefig(GRAPH_FILE)   # <--- CHANGED
     finally:
         plt.close()
 
-# -------- NEW: CSV LOGGING FUNCTION --------
+# -------- NEW: CSV LOGGING --------
 def log_motion(timestamp, delta):
-    """Append motion detection timestamp + time since last motion to CSV and update chart."""
     new_file = not os.path.exists(LOG_FILE)
     try:
         with open(LOG_FILE, "a", newline="") as f:
@@ -132,20 +125,16 @@ def log_motion(timestamp, delta):
         print("Log write error:", e)
         return
 
-    # After successfully logging, update the PNG chart
     update_interval_chart()
 
 def on_motion(_ch):
     global last_trigger
     now = time.monotonic()
 
-    # calculate delta BEFORE cooldown early-return
-    if last_trigger == 0.0:
-        delta = None  # first detection
-    else:
-        delta = round(now - last_trigger, 3)
+    # Calculate gap before updating trigger time
+    delta = None if last_trigger == 0.0 else round(now - last_trigger, 3)
 
-    # CSV log every detection (even if within cooldown)
+    # Log every detection
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_motion(timestamp, delta)
 
@@ -163,12 +152,11 @@ def on_motion(_ch):
     threading.Thread(target=worker, daemon=True).start()
 
 def main():
-    os.makedirs(VIDEO_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)   # <--- CHANGED
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(PIR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     print("PIR + USB Arducam (FFmpeg) armed.")
-    print(f"Clips → {VIDEO_DIR}")
-    print(f"Motion log → {LOG_FILE}")
+    print(f"Saving all data → {DATA_DIR}")   # <--- CHANGED
     time.sleep(2)
 
     GPIO.add_event_detect(PIR_PIN, GPIO.RISING, bouncetime=200)
