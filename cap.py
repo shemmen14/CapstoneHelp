@@ -21,7 +21,15 @@ except Exception:
 
 # ---------- WEB DASHBOARD IMPORTS ----------
 try:
-    from flask import Flask, send_from_directory, jsonify, render_template_string, Response
+    from flask import (
+        Flask,
+        send_from_directory,
+        jsonify,
+        render_template_string,
+        Response,
+        redirect,
+        url_for,
+    )
     HAS_FLASK = True
 except Exception:
     HAS_FLASK = False
@@ -62,7 +70,9 @@ last_motion_delta = None              # seconds since previous motion
 motion_event_count = 0
 
 KILL_REQUESTED = False                # for web kill switch
-RECORDING_ACTIVE = False              # NEW: True while ffmpeg is recording
+
+# NEW: camera mode - "record" or "stream"
+CAMERA_MODE = "record"                # default mode
 
 
 # ---------- UTILS ----------
@@ -111,26 +121,19 @@ def ffmpeg_cmd(outpath):
         raise RuntimeError("ffmpeg not found")
 
 def record_clip():
-    global RECORDING_ACTIVE
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = os.path.join(DATA_DIR, f"motion_{ts}.mp4")
     print(f"[{ts}] Recording {RECORD_SECONDS}s -> {out}")
 
-    # Tell livestream to pause and release the camera
-    RECORDING_ACTIVE = True
-    try:
-        cmd = ffmpeg_cmd(out)
-        res = run_cmd(cmd)
-        if res.returncode != 0:
-            print("FFmpeg error:\n", res.stderr.strip() or res.stdout.strip())
-        else:
-            print(f"[{ts}] Saved {out}")
-            # upload video to Google Drive
-            upload_to_drive(out)
-    finally:
-        # Always clear the flag, even if ffmpeg fails
-        RECORDING_ACTIVE = False
-        print(f"[{ts}] Recording finished; livestream may resume.")
+    cmd = ffmpeg_cmd(out)
+    res = run_cmd(cmd)
+    if res.returncode != 0:
+        print("FFmpeg error:\n", res.stderr.strip() or res.stdout.strip())
+    else:
+        print(f"[{ts}] Saved {out}")
+        # upload video to Google Drive
+        upload_to_drive(out)
+
 
 # ---------- CHART GENERATION ----------
 def update_interval_chart():
@@ -199,7 +202,7 @@ def log_motion(timestamp, delta):
 
 # ---------- MOTION HANDLER ----------
 def on_motion(_ch):
-    global last_trigger, last_motion_timestamp, last_motion_delta, motion_event_count
+    global last_trigger, last_motion_timestamp, last_motion_delta, motion_event_count, CAMERA_MODE
 
     now = time.monotonic()
 
@@ -218,10 +221,11 @@ def on_motion(_ch):
     motion_event_count += 1
 
     # print to terminal
+    mode_str = CAMERA_MODE.upper()
     if delta is None:
-        print(f"[{timestamp_str}] Motion detected (first event).")
+        print(f"[{timestamp_str}] Motion detected (first event). [Mode={mode_str}]")
     else:
-        print(f"[{timestamp_str}] Motion detected. Δt since last motion = {delta} s.")
+        print(f"[{timestamp_str}] Motion detected. Δt = {delta} s. [Mode={mode_str}]")
 
     # log every detection
     log_motion(timestamp_str, delta)
@@ -230,6 +234,10 @@ def on_motion(_ch):
     if (now - last_trigger) < COOLDOWN_SECONDS:
         return
     last_trigger = now
+
+    # Only record in RECORD mode
+    if CAMERA_MODE != "record":
+        return
 
     def worker():
         with record_lock:
@@ -269,12 +277,40 @@ DASHBOARD_TEMPLATE = """
         }
         .row { display: flex; flex-wrap: wrap; gap: 16px; }
         .col { flex: 1 1 280px; }
+        .mode-btn {
+            padding: 6px 12px;
+            margin-right: 6px;
+            border-radius: 4px;
+            border: 1px solid #888;
+            cursor: pointer;
+            background: #eee;
+        }
+        .mode-btn.active {
+            background: #2c3e50;
+            color: #fff;
+            border-color: #2c3e50;
+        }
     </style>
 </head>
 <body>
     <div class="card">
         <h1>Capstone Motion Dashboard</h1>
-        <div class="row">
+
+        <p>Current camera mode:
+            <strong>{{ current_mode.upper() }}</strong>
+        </p>
+        <form action="/mode/record" method="get" style="display:inline;">
+            <button class="mode-btn {% if current_mode == 'record' %}active{% endif %}">
+                Record Mode
+            </button>
+        </form>
+        <form action="/mode/stream" method="get" style="display:inline;">
+            <button class="mode-btn {% if current_mode == 'stream' %}active{% endif %}">
+                Stream Mode
+            </button>
+        </form>
+
+        <div class="row" style="margin-top:16px;">
             <div class="col">
                 <h2>Status</h2>
                 <dl>
@@ -302,11 +338,13 @@ DASHBOARD_TEMPLATE = """
 
             <div class="col">
                 <h2>Live Camera Stream</h2>
-                {% if livestream_available %}
+                {% if livestream_available and current_mode == 'stream' %}
                     <img src="/livestream" alt="Live camera stream">
                     <p style="font-size:12px;color:#555;">
-                        Stream automatically pauses while recording motion clips.
+                        Stream is active in STREAM mode. Switch to RECORD mode to enable clip recording.
                     </p>
+                {% elif current_mode != 'stream' %}
+                    <p>Switch to STREAM mode to enable live video.</p>
                 {% else %}
                     <p>OpenCV not installed or camera unavailable.</p>
                 {% endif %}
@@ -327,43 +365,29 @@ DASHBOARD_TEMPLATE = """
 def gen_frames():
     """Generator that yields JPEG frames from the USB camera for livestream.
 
-    While RECORDING_ACTIVE is True, the camera is released and the
-    stream pauses to avoid /dev/video0 conflicts with FFmpeg.
+    Only runs meaningfully when CAMERA_MODE == "stream".
     """
     if not HAS_OPENCV:
         return
 
-    global RECORDING_ACTIVE, KILL_REQUESTED
+    global KILL_REQUESTED, CAMERA_MODE
 
-    cap = None
+    # Open camera
+    cap = cv2.VideoCapture(DEVICE)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 20)
+
+    if not cap.isOpened():
+        print("[Livestream] Failed to open camera for streaming.")
+        cap.release()
+        return
+
+    print("[Livestream] Camera opened for streaming.")
 
     while True:
-        if KILL_REQUESTED:
+        if KILL_REQUESTED or CAMERA_MODE != "stream":
             break
-
-        # If recording is happening, release camera and wait
-        if RECORDING_ACTIVE:
-            if cap is not None:
-                cap.release()
-                cap = None
-                print("[Livestream] Pausing stream: camera released for recording.")
-            time.sleep(0.1)
-            continue
-
-        # Not recording: ensure camera is open
-        if cap is None:
-            cap = cv2.VideoCapture(DEVICE)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 20)
-            if not cap.isOpened():
-                print("[Livestream] Failed to open camera; retrying...")
-                cap.release()
-                cap = None
-                time.sleep(0.5)
-                continue
-            else:
-                print("[Livestream] Camera opened for streaming.")
 
         success, frame = cap.read()
         if not success:
@@ -379,9 +403,9 @@ def gen_frames():
             b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
         )
 
-    if cap is not None:
-        cap.release()
-        print("[Livestream] Camera released; livestream stopped.")
+    cap.release()
+    print("[Livestream] Camera released; livestream stopped or mode changed.")
+
 
 if HAS_FLASK:
     @app.route("/")
@@ -393,6 +417,7 @@ if HAS_FLASK:
             motion_event_count=motion_event_count,
             graph_exists=os.path.exists(GRAPH_FILE),
             livestream_available=HAS_OPENCV,
+            current_mode=CAMERA_MODE,
         )
 
     @app.route("/graph")
@@ -408,6 +433,7 @@ if HAS_FLASK:
             last_motion_timestamp=last_motion_timestamp,
             last_motion_delta=last_motion_delta,
             motion_event_count=motion_event_count,
+            current_mode=CAMERA_MODE,
         )
 
     @app.route("/kill")
@@ -416,10 +442,20 @@ if HAS_FLASK:
         KILL_REQUESTED = True
         return "<h1>Kill signal sent. Program will shut down.</h1>", 200
 
+    @app.route("/mode/<mode>")
+    def set_mode(mode):
+        global CAMERA_MODE
+        if mode in ("record", "stream"):
+            CAMERA_MODE = mode
+            print(f"[WEB] Camera mode set to: {CAMERA_MODE}")
+        return redirect(url_for("index"))
+
     @app.route("/livestream")
     def livestream():
         if not HAS_OPENCV:
             return "OpenCV (python3-opencv) not installed on Pi.", 500
+        if CAMERA_MODE != "stream":
+            return "Camera is in RECORD mode. Switch to STREAM mode on dashboard.", 403
         return Response(
             gen_frames(),
             mimetype="multipart/x-mixed-replace; boundary=frame"
