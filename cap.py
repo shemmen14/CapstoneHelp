@@ -5,6 +5,7 @@ import os, time, threading, subprocess, shlex, shutil
 from datetime import datetime
 import RPi.GPIO as GPIO
 import csv
+import logging 
 
 # --- plotting imports (non-GUI backend) ---
 try:
@@ -21,6 +22,8 @@ try:
     HAS_FLASK = True
 except Exception:
     HAS_FLASK = False
+    
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 # ---------- PATHS / DATA DIR ----------
 DATA_DIR = os.path.expanduser("~/CapstoneData")
