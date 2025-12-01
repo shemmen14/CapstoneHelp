@@ -1,29 +1,37 @@
-# Program to operate camera and motion sensor for Raspberry pi 
-# -Sam Hemmen
+# Program to operate camera and motion sensor for Raspberry Pi
+# - Sam Hemmen
 
-import os, time, threading, subprocess, shlex, shutil
+import os, time, threading, subprocess, shlex, shutil, logging
 from datetime import datetime
 import RPi.GPIO as GPIO
 import csv
-import logging 
 
-# --- plotting imports (non-GUI backend) ---
+# ---------- LOGGING ----------
+# Quiet down Flask/Werkzeug request spam ("GET / HTTP/1.1" 200 -)
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+# ---------- PLOTTING IMPORTS ----------
 try:
     import matplotlib
-    matplotlib.use("Agg")
+    matplotlib.use("Agg")  # non-GUI backend
     import matplotlib.pyplot as plt
     HAS_MPL = True
 except Exception:
     HAS_MPL = False
 
-# --- web dashboard imports ---
+# ---------- WEB DASHBOARD IMPORTS ----------
 try:
-    from flask import Flask, send_from_directory, jsonify, render_template_string
+    from flask import Flask, send_from_directory, jsonify, render_template_string, Response
     HAS_FLASK = True
 except Exception:
     HAS_FLASK = False
-    
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+# ---------- OPENCV (LIVESTREAM) IMPORT ----------
+try:
+    import cv2
+    HAS_OPENCV = True
+except Exception:
+    HAS_OPENCV = False
 
 # ---------- PATHS / DATA DIR ----------
 DATA_DIR = os.path.expanduser("~/CapstoneData")
@@ -49,11 +57,12 @@ BITRATE = "6M"
 last_trigger = 0.0                    # monotonic timestamp of last *recording* trigger
 record_lock = threading.Lock()
 
-last_motion_timestamp = None 
+last_motion_timestamp = None          # human-readable string
 last_motion_delta = None              # seconds since previous motion
 motion_event_count = 0
 
-KILL_REQUESTED = False                # <-- for web kill switch
+KILL_REQUESTED = False                # for web kill switch
+RECORDING_ACTIVE = False              # NEW: True while ffmpeg is recording
 
 
 # ---------- UTILS ----------
@@ -78,7 +87,7 @@ def upload_to_drive(path):
         print(f"rclone exception for {path}: {e}")
 
 
-# ---------- FFMPEG ----------
+# ---------- FFMPEG RECORDING ----------
 def ffmpeg_cmd(outpath):
     # FFmpeg command for a 5s capture from a UVC cam
     base = (
@@ -102,19 +111,26 @@ def ffmpeg_cmd(outpath):
         raise RuntimeError("ffmpeg not found")
 
 def record_clip():
+    global RECORDING_ACTIVE
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = os.path.join(DATA_DIR, f"motion_{ts}.mp4")
     print(f"[{ts}] Recording {RECORD_SECONDS}s -> {out}")
 
-    cmd = ffmpeg_cmd(out)
-    res = run_cmd(cmd)
-    if res.returncode != 0:
-        print("FFmpeg error:\n", res.stderr.strip() or res.stdout.strip())
-    else:
-        print(f"[{ts}] Saved {out}")
-        # upload video to Google Drive
-        upload_to_drive(out)
-
+    # Tell livestream to pause and release the camera
+    RECORDING_ACTIVE = True
+    try:
+        cmd = ffmpeg_cmd(out)
+        res = run_cmd(cmd)
+        if res.returncode != 0:
+            print("FFmpeg error:\n", res.stderr.strip() or res.stdout.strip())
+        else:
+            print(f"[{ts}] Saved {out}")
+            # upload video to Google Drive
+            upload_to_drive(out)
+    finally:
+        # Always clear the flag, even if ffmpeg fails
+        RECORDING_ACTIVE = False
+        print(f"[{ts}] Recording finished; livestream may resume.")
 
 # ---------- CHART GENERATION ----------
 def update_interval_chart():
@@ -225,7 +241,7 @@ def on_motion(_ch):
     threading.Thread(target=worker, daemon=True).start()
 
 
-# ---------- WEB DASHBOARD ----------
+# ---------- WEB DASHBOARD & LIVESTREAM ----------
 app = Flask(__name__) if HAS_FLASK else None
 
 DASHBOARD_TEMPLATE = """
@@ -237,7 +253,7 @@ DASHBOARD_TEMPLATE = """
     <meta http-equiv="refresh" content="5">
     <style>
         body { font-family: sans-serif; margin: 20px; }
-        .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; max-width: 600px; }
+        .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; max-width: 900px; }
         h1 { margin-top: 0; }
         img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }
         dt { font-weight: bold; }
@@ -251,27 +267,51 @@ DASHBOARD_TEMPLATE = """
             cursor: pointer;
             margin-top: 12px;
         }
+        .row { display: flex; flex-wrap: wrap; gap: 16px; }
+        .col { flex: 1 1 280px; }
     </style>
 </head>
 <body>
     <div class="card">
         <h1>Capstone Motion Dashboard</h1>
-        <dl>
-            <dt>Last motion timestamp</dt>
-            <dd>{{ last_motion_timestamp or "No motion yet" }}</dd>
+        <div class="row">
+            <div class="col">
+                <h2>Status</h2>
+                <dl>
+                    <dt>Last motion timestamp</dt>
+                    <dd>{{ last_motion_timestamp or "No motion yet" }}</dd>
 
-            <dt>Seconds since previous motion</dt>
-            <dd>
-                {% if last_motion_delta is none %}
-                    N/A
+                    <dt>Seconds since previous motion</dt>
+                    <dd>
+                        {% if last_motion_delta is none %}
+                            N/A
+                        {% else %}
+                            {{ last_motion_delta }} s
+                        {% endif %}
+                    </dd>
+
+                    <dt>Total motion events (since script start)</dt>
+                    <dd>{{ motion_event_count }}</dd>
+                </dl>
+
+                <h2>Controls</h2>
+                <form action="/kill" method="get">
+                    <button class="kill">STOP PROGRAM</button>
+                </form>
+            </div>
+
+            <div class="col">
+                <h2>Live Camera Stream</h2>
+                {% if livestream_available %}
+                    <img src="/livestream" alt="Live camera stream">
+                    <p style="font-size:12px;color:#555;">
+                        Stream automatically pauses while recording motion clips.
+                    </p>
                 {% else %}
-                    {{ last_motion_delta }} s
+                    <p>OpenCV not installed or camera unavailable.</p>
                 {% endif %}
-            </dd>
-
-            <dt>Total motion events (since script start)</dt>
-            <dd>{{ motion_event_count }}</dd>
-        </dl>
+            </div>
+        </div>
 
         <h2>Intervals Between Motions</h2>
         {% if graph_exists %}
@@ -279,15 +319,69 @@ DASHBOARD_TEMPLATE = """
         {% else %}
             <p>No interval graph yet. It will appear after a few motion events.</p>
         {% endif %}
-
-        <h2>Controls</h2>
-        <form action="/kill" method="get">
-            <button class="kill">STOP PROGRAM</button>
-        </form>
     </div>
 </body>
 </html>
 """
+
+def gen_frames():
+    """Generator that yields JPEG frames from the USB camera for livestream.
+
+    While RECORDING_ACTIVE is True, the camera is released and the
+    stream pauses to avoid /dev/video0 conflicts with FFmpeg.
+    """
+    if not HAS_OPENCV:
+        return
+
+    global RECORDING_ACTIVE, KILL_REQUESTED
+
+    cap = None
+
+    while True:
+        if KILL_REQUESTED:
+            break
+
+        # If recording is happening, release camera and wait
+        if RECORDING_ACTIVE:
+            if cap is not None:
+                cap.release()
+                cap = None
+                print("[Livestream] Pausing stream: camera released for recording.")
+            time.sleep(0.1)
+            continue
+
+        # Not recording: ensure camera is open
+        if cap is None:
+            cap = cv2.VideoCapture(DEVICE)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 20)
+            if not cap.isOpened():
+                print("[Livestream] Failed to open camera; retrying...")
+                cap.release()
+                cap = None
+                time.sleep(0.5)
+                continue
+            else:
+                print("[Livestream] Camera opened for streaming.")
+
+        success, frame = cap.read()
+        if not success:
+            time.sleep(0.1)
+            continue
+
+        ret, buffer = cv2.imencode(".jpg", frame)
+        if not ret:
+            continue
+        frame_bytes = buffer.tobytes()
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+        )
+
+    if cap is not None:
+        cap.release()
+        print("[Livestream] Camera released; livestream stopped.")
 
 if HAS_FLASK:
     @app.route("/")
@@ -298,6 +392,7 @@ if HAS_FLASK:
             last_motion_delta=last_motion_delta,
             motion_event_count=motion_event_count,
             graph_exists=os.path.exists(GRAPH_FILE),
+            livestream_available=HAS_OPENCV,
         )
 
     @app.route("/graph")
@@ -320,6 +415,15 @@ if HAS_FLASK:
         global KILL_REQUESTED
         KILL_REQUESTED = True
         return "<h1>Kill signal sent. Program will shut down.</h1>", 200
+
+    @app.route("/livestream")
+    def livestream():
+        if not HAS_OPENCV:
+            return "OpenCV (python3-opencv) not installed on Pi.", 500
+        return Response(
+            gen_frames(),
+            mimetype="multipart/x-mixed-replace; boundary=frame"
+        )
 
     def start_dashboard():
         # accessible at http://<pi-ip>:5000/
