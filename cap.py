@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+# Program to run Pi motion sensor and operate camera
+
 import os, time, threading, subprocess, shlex, shutil
 from datetime import datetime
 import RPi.GPIO as GPIO
@@ -10,8 +11,8 @@ RECORD_SECONDS = 5                    # clip length
 COOLDOWN_SECONDS = 30                 # min time between triggers
 
 DEVICE = "/dev/video0"                # your USB Arducam device
-WIDTH, HEIGHT, FPS = 1920, 1080, 30       # match what your cam supports
-INPUT_FORMAT = "mjpeg"                # from v4l2-ctl --list-formats-ext
+WIDTH, HEIGHT, FPS = 1920, 1080, 30       
+INPUT_FORMAT = "mjpeg"              
 ENCODER = "h264_v4l2m2m"              # try HW encoder; fallback to libx264 automatically
 BITRATE = "6M"
 
@@ -26,7 +27,7 @@ def run_cmd(cmd):
     )
 
 def ffmpeg_cmd(outpath):
-    # Build FFmpeg command for a 5s capture from a UVC cam
+    # FFmpeg command for a 5s capture from a UVC cam
     base = (
         f'ffmpeg -hide_banner -loglevel error -y '
         f'-f v4l2 -framerate {FPS} -video_size {WIDTH}x{HEIGHT} '
@@ -36,12 +37,12 @@ def ffmpeg_cmd(outpath):
     )
     # Prefer HW encoder, else fallback to libx264
     if shutil.which("ffmpeg"):
-        # Try hardware encoder
+        
         cmd = base + f'-c:v {ENCODER} -b:v {BITRATE} {shlex.quote(outpath)}'
         test = run_cmd(cmd)
         if test.returncode == 0:
-            return cmd  # worked
-        # Fallback
+            return cmd  
+    
         return base + f'-c:v libx264 -preset veryfast -crf 23 {shlex.quote(outpath)}'
     else:
         raise RuntimeError("ffmpeg not found")
