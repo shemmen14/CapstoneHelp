@@ -4,6 +4,16 @@
 import os, time, threading, subprocess, shlex, shutil
 from datetime import datetime
 import RPi.GPIO as GPIO
+import csv   # --- NEW ---
+
+# --- NEW: plotting imports (safe if matplotlib missing) ---
+try:
+    import matplotlib
+    matplotlib.use("Agg")  # non-GUI backend
+    import matplotlib.pyplot as plt
+    HAS_MPL = True
+except Exception:
+    HAS_MPL = False
 
 # ---------- SETTINGS ----------
 PIR_PIN = 17                          # BCM pin for PIR OUT
@@ -16,6 +26,9 @@ WIDTH, HEIGHT, FPS = 1920, 1080, 30
 INPUT_FORMAT = "mjpeg"               
 ENCODER = "h264_v4l2m2m"              # try HW encoder; fallback to libx264 automatically
 BITRATE = "6M"
+
+# ---------- NEW ----------
+LOG_FILE = os.path.join(VIDEO_DIR, "motion_log.csv")
 
 # ---------- STATE ----------
 last_trigger = 0.0
@@ -60,9 +73,82 @@ def record_clip():
     else:
         print(f"[{ts}] Saved {out}")
 
+# -------- NEW: chart generation from CSV --------
+def update_interval_chart():
+    """Read motion_log.csv and generate a PNG chart of intervals between motions."""
+    if not HAS_MPL:
+        return
+    if not os.path.exists(LOG_FILE):
+        return
+
+    indices = []
+    deltas = []
+
+    try:
+        with open(LOG_FILE, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                delta_str = row.get("seconds_since_last_motion")
+                if not delta_str or delta_str == "None":
+                    continue
+                try:
+                    delta_val = float(delta_str)
+                except ValueError:
+                    continue
+                deltas.append(delta_val)
+                indices.append(len(deltas))
+    except Exception:
+        # Don't let plotting errors break main functionality
+        return
+
+    if not deltas:
+        return
+
+    plt.figure()
+    plt.plot(indices, deltas, marker="o")
+    plt.xlabel("Motion event index")
+    plt.ylabel("Seconds since previous motion")
+    plt.title("Intervals Between Motion Events")
+    plt.grid(True, linestyle="--", linewidth=0.5)
+    plt.tight_layout()
+
+    out_png = os.path.join(VIDEO_DIR, "motion_intervals.png")
+    try:
+        plt.savefig(out_png)
+    finally:
+        plt.close()
+
+# -------- NEW: CSV LOGGING FUNCTION --------
+def log_motion(timestamp, delta):
+    """Append motion detection timestamp + time since last motion to CSV and update chart."""
+    new_file = not os.path.exists(LOG_FILE)
+    try:
+        with open(LOG_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            if new_file:
+                writer.writerow(["timestamp", "seconds_since_last_motion"])
+            writer.writerow([timestamp, delta])
+    except Exception as e:
+        print("Log write error:", e)
+        return
+
+    # After successfully logging, update the PNG chart
+    update_interval_chart()
+
 def on_motion(_ch):
     global last_trigger
     now = time.monotonic()
+
+    # calculate delta BEFORE cooldown early-return
+    if last_trigger == 0.0:
+        delta = None  # first detection
+    else:
+        delta = round(now - last_trigger, 3)
+
+    # CSV log every detection (even if within cooldown)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_motion(timestamp, delta)
+
     if (now - last_trigger) < COOLDOWN_SECONDS:
         return
     last_trigger = now
@@ -82,6 +168,7 @@ def main():
     GPIO.setup(PIR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     print("PIR + USB Arducam (FFmpeg) armed.")
     print(f"Clips → {VIDEO_DIR}")
+    print(f"Motion log → {LOG_FILE}")
     time.sleep(2)
 
     GPIO.add_event_detect(PIR_PIN, GPIO.RISING, bouncetime=200)
