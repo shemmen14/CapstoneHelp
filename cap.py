@@ -47,7 +47,7 @@ LOG_FILE = os.path.join(DATA_DIR, "motion_log.csv")
 GRAPH_FILE = os.path.join(DATA_DIR, "motion_intervals.png")
 
 # ---------- GOOGLE DRIVE UPLOAD (rclone) ----------
-GOOGLE_DRIVE_REMOTE = "gdrive:CapstoneData"  # rclone remote:path
+GOOGLE_DRIVE_REMOTE = "T9P50:sumdiff"  # rclone remote:path
 HAS_RCLONE = shutil.which("rclone") is not None
 
 # ---------- SETTINGS ----------
