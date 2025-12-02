@@ -3,32 +3,35 @@ Capstone Motion Detection System - Fresh Raspberry Pi Setup Instructions
 =====================================================================
 
 This document explains how to set up the complete Capstone Motion System
-on a FRESH Raspberry Pi — including motion detection, video recording,
-Google Drive uploading, CSV logging, graphing, and the live web dashboard.
-Follow these steps in order. Yes, to answer your suspicions, it looks nice because I had Chat format it for me.
+on a FRESH Raspberry Pi — including motion detection, RECORD vs STREAM camera modes,
+video recording, Google Drive uploading, CSV logging, graphing, and the live web dashboard
+with a continuous livestream that DOES NOT break during page updates.
+
+Yes, to confirm your suspicions, this was indeed formatted by Mr. GPT.
+
+Follow these steps in order.
 
 ------------------------------------------------------------
 1. INITIAL RASPBERRY PI SETUP
 ------------------------------------------------------------
-• Boot a fresh Raspberry Pi 5
-• Connect to a personal phone hotspot
+• Boot a fresh Raspberry Pi 5  
+• Connect to a personal phone hotspot  
 • Update system packages:
 
     sudo apt update
     sudo apt upgrade -y
 
-• Set your Wi-Fi country so wireless works properly:
+• Set Wi-Fi country:
 
     sudo raspi-config
-    → Localisation Options or System Options
-    → WLAN Country
-    → Select US
-    → Finish and reboot
+      → System Options
+      → WLAN Country
+      → Select US
+      → Finish and reboot
 
 ------------------------------------------------------------
 2. INSTALL REQUIRED PACKAGES
 ------------------------------------------------------------
-Install all packages used by the Capstone Motion Detection System.
 
 ### Core system packages
     sudo apt install -y python3-pip python3-flask python3-matplotlib ffmpeg rclone git
@@ -39,50 +42,44 @@ Install all packages used by the Capstone Motion Detection System.
 ### USB Camera (Arducam / UVC) packages
     sudo apt install -y v4l-utils
 
+### OpenCV for livestreaming
+    sudo apt install -y python3-opencv
+
 ### Optional but recommended
     sudo apt install -y python3-numpy python3-requests htop neofetch
 
-Verify installations:
-
-    python3 -c "import RPi.GPIO, flask, matplotlib"
+### Verify core packages
+    python3 -c "import RPi.GPIO, flask, matplotlib, cv2"
 
 ------------------------------------------------------------
 3. SET UP GOOGLE DRIVE UPLOADS (rclone)
 ------------------------------------------------------------
-Configure rclone so the Pi can upload videos, CSV, and graphs
-to a Google Drive folder automatically.
-
-Run:
 
     rclone config
 
-Then:
-    n    (new remote)
-    gdrive   ← name MUST be exactly this
-    13       (Google Drive)
-    Press Enter for Client ID/Secret
-    Select: Full access
-    Press Enter for root folder
-    Auto-config: YES (if Pi has a browser)
-       OR
-    Auto-config: NO → open the provided URL on your laptop → paste code back into Pi
+Steps:
+    n            (new remote)
+    gdrive       (name EXACTLY: gdrive)
+    13           (Google Drive)
+    Enter through Client ID/Secret
+    Choose: Full access
+    Auto-config: YES (or NO and paste URL token)
+    Confirm remote
 
-After completion, test:
-
+Test:
     rclone ls gdrive:
 
-Create a Drive folder:
-
+Create cloud storage folder:
     rclone mkdir gdrive:CapstoneData
 
 ------------------------------------------------------------
-4. CREATE PROJECT FOLDER
+4. CREATE PROJECT FOLDERS
 ------------------------------------------------------------
 
     mkdir ~/CapstoneHelp
     mkdir ~/CapstoneData
 
-Copy your cap.py script into:
+Place your cap.py script in:
 
     ~/CapstoneHelp/cap.py
 
@@ -90,63 +87,75 @@ Copy your cap.py script into:
 5. RUN THE PROGRAM
 ------------------------------------------------------------
 
-Navigate to the project folder:
-
     cd ~/CapstoneHelp
-
-Run:
-
     python3 cap.py
 
-If everything is correct, terminal will show:
+Expected output:
     PIR + USB Arducam armed…
-    Saving data → /home/pi/CapstoneData
-    Dashboard → http://<pi-ip>:5000/
+    Saving all data → /home/pi/CapstoneData
+    Web dashboard → http://<pi-ip>:5000/
 
 ------------------------------------------------------------
 6. ACCESS THE WEB DASHBOARD
 ------------------------------------------------------------
-First, find your Raspberry Pi’s IP address:
+
+Find your IP:
 
     hostname -I
 
-Example output:
-
+Example:  
     192.168.8.24
 
-On a device connected to the **same network** (phone, laptop):
-
-Open:
-
-    http://<pi-ip>:5000/
-
-Example:
+Visit from phone/laptop on same hotspot:
 
     http://192.168.8.24:5000/
 
-Dashboard shows:
-    • Last motion time
-    • Seconds since previous motion
-    • Graph of intervals
-    • STOP PROGRAM button
+Dashboard includes:
+    • RECORD / STREAM mode switch  
+    • Continuous livestream in STREAM mode  
+    • Motion timestamps  
+    • Seconds since previous motion  
+    • Motion event count  
+    • Auto-updating interval graph  
+    • STOP PROGRAM kill switch  
 
-NOTE:
-If you're on MSU Secure or Guest networks, these isolate devices.
-I recommend using your phone hotspot instead.
+IMPORTANT:  
+MSU Guest / Secure network **isolates devices** → use phone hotspot.
 
 ------------------------------------------------------------
-7. STOP THE PROGRAM
+7. CAMERA MODES (NEW & IMPORTANT)
 ------------------------------------------------------------
-You have 3 ways to stop the program:
 
-1) From the web dashboard:
-    Press the STOP PROGRAM button.
+### RECORD Mode
+- PIR triggers video recordings  
+- Files saved to ~/CapstoneData  
+- Uploads to Google Drive  
+- **Livestream is OFF** (camera reserved for FFmpeg)
 
-2) From the terminal:
-    Press CTRL + C
+### STREAM Mode
+- PIR still logs events  
+- NO video recording  
+- **Continuous livestream active** using OpenCV V4L2 backend  
+- Never conflicts with recording  
+- No page refresh interruptions (JS live updates)
 
-3) Using the stopcap alias (recommended):
-Add this to ~/.bashrc:
+Switch modes instantly from the web dashboard.
+
+------------------------------------------------------------
+8. STOP THE PROGRAM
+------------------------------------------------------------
+
+### Option 1: From Web Dashboard
+Press **STOP PROGRAM** button.
+
+### Option 2: Keyboard
+Press:
+
+    CTRL + C
+
+### Option 3: stopcap alias (recommended)
+
+Add to ~/.bashrc:
 
     alias stopcap='sudo pkill -f cap.py; sudo pkill -f python3; sudo raspi-gpio set 17 ip; echo "Capstone program stopped and GPIO reset."'
 
@@ -154,15 +163,13 @@ Activate:
 
     source ~/.bashrc
 
-Run anytime:
+Run:
 
     stopcap
 
 ------------------------------------------------------------
-8. AUTOSTART ON BOOT (OPTIONAL)
+9. AUTOSTART PROGRAM ON BOOT (OPTIONAL)
 ------------------------------------------------------------
-If you want the program to run automatically at boot,
-create a systemd service:
 
     sudo nano /etc/systemd/system/capstone.service
 
@@ -181,26 +188,27 @@ Paste:
     [Install]
     WantedBy=multi-user.target
 
-Enable and start:
+Enable autostart:
 
     sudo systemctl enable capstone
     sudo systemctl start capstone
 
 ------------------------------------------------------------
-9. FILE LOCATIONS
+10. FILE LOCATIONS
 ------------------------------------------------------------
-All generated data is stored in:
+
+All generated files go to:
 
     /home/pi/CapstoneData/
 
-Files include:
-    • motion_YYYYMMDD_HHMMSS.mp4
-    • motion_log.csv
-    • motion_intervals.png
-    • Uploads synced automatically to Google Drive
+Includes:
+    • motion_YYYYMMDD_HHMMSS.mp4  
+    • motion_log.csv  
+    • motion_intervals.png  
+    • all synced to Google Drive  
 
 ------------------------------------------------------------
-10. TROUBLESHOOTING
+11. TROUBLESHOOTING
 ------------------------------------------------------------
 
 • GPIO busy error:
@@ -208,17 +216,23 @@ Files include:
     sudo pkill -f python3
     sudo raspi-gpio set 17 ip
 
-• Dashboard cannot load:
-    - Ensure Pi and laptop are on SAME network
-    - Ensure program is running
+• Dashboard not loading:
+    - Use hotspot (campus networks isolate devices)
+    - Ensure cap.py is running
     - Try: curl http://<pi-ip>:5000
 
-• Wi-Fi blocked (rfkill):
-    sudo raspi-config → WLAN Country
+• Livestream flicker:
+    ✔ FIXED — Removed HTML meta refresh  
+    ✔ Added JavaScript to update stats without reloading  
+    ✔ Stream uses V4L2 backend for stability  
 
-• USB camera not detected:
+• USB camera debugging:
     v4l2-ctl --list-devices
     v4l2-ctl --list-formats-ext -d /dev/video0
+
+• Google Drive upload errors:
+    rclone ls gdrive:
+    rclone mkdir gdrive:CapstoneData
 
 ------------------------------------------------------------
 THE END
